@@ -9,11 +9,10 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 import time
 
-
-class DiffDrive():
+class DriveDifferential():
     def __init__(self):
 
-        rospy.init_node('jetbot2_drive')
+        rospy.init_node('drive_differential')
         rospy.loginfo("[DFF] Differential Drive application initialized")
         
         if rospy.has_param('/drive'):
@@ -23,21 +22,28 @@ class DiffDrive():
         else:
             rospy.logerr("[DFF] Config parameter not found: /drive")
                     
-        self.actuators = {}
-        self.actuators['left_motor']  = MotorConvert(id=1, max_pwm = maximum_pwm)
-        self.actuators['right_motor'] = MotorConvert(id=2, max_pwm = maximum_pwm)
+        # setup motor controller
+        motor_driver = Adafruit_MotorHAT(i2c_bus=1)
+        
+        self.motor_left_ID = 1
+        self.motor_right_ID = 2
+
+        self.motor_left = motor_driver.getMotor(self.motor_left_ID)
+        self.motor_right = motor_driver.getMotor(self.motor_right_ID)
         rospy.loginfo("[DFF] Actuators initialized")
 
-        self._servo_msg = ServoArray()
-        for i in range(2): self._servo_msg.servos.append(Servo())
-
+        rospy.Subscriber('~cmd_str', String, self.set_actuators_from_cmdstr)
+        rospy.loginfo("[DFF] String Subscriber initialized")
+        
+        #self._dcmotor_msg = ServoArray()
+        #for i in range(2): self._servo_msg.servos.append(Servo())
         #--- Create the servo array publisher
-        self.ros_pub_servo_array = rospy.Publisher("/servos_absolute", ServoArray, queue_size=1)
-        rospy.loginfo("[DFF] Servo Publisher initialized")
+        #self.ros_pub_servo_array = rospy.Publisher("/servos_absolute", ServoArray, queue_size=1)
+        #rospy.loginfo("[ACK] Servo Publisher initialized")
 
         #--- Create the Subscriber to Twist commands
-        self.ros_sub_twist = rospy.Subscriber("/cmd_vel", Twist, self.set_actuators_from_cmdvel)
-        rospy.loginfo("[DFF] Twist Subscriber initialized")
+        #self.ros_sub_twist = rospy.Subscriber("/cmd_vel", Twist, self.set_actuators_from_cmdvel)
+        #rospy.loginfo("[ACK] Twist Subscriber initialized")
 
         #--- Get the last time e got a commands
         self._last_time_cmd_rcv = time.time()
@@ -45,56 +51,79 @@ class DiffDrive():
 
         rospy.loginfo("[DFF] Initialization complete")
 
+    def set_actuators_from_cmdvel(self, message):
+        """
+        Get a message from cmd_vel, assuming a maximum input of 1
+        """
+        #-- Save the time
+        self._last_time_cmd_rcv = time.time()
+
+        #-- Convert vel into servo values
+        self.actuators['throttle'].get_value_out(message.linear.x)
+        self.actuators['steering'].get_value_out(message.angular.z)
+        rospy.loginfo("[ACK] Received command: Linear = %2.1f , Angular = %2.1f"%(message.linear.x, message.angular.z))
+        self.send_servo_msg()
+        
+    def set_actuators_from_cmdstr(self, msg):
+        """
+        Get a message from cmd_vel, assuming a maximum input of 1
+        """
+        #-- Save the time
+        self._last_time_cmd_rcv = time.time()
+
+        rospy.loginfo(rospy.get_caller_id() + ' cmd_str=%s', msg.data)
+
+        if msg.data.lower() == "left":
+            self.send_motor_msg(self.motor_left_ID,  -1.0)
+            self.send_motor_msg(self.motor_right_ID,  1.0) 
+        elif msg.data.lower() == "right":
+            self.send_motor_msg(self.motor_left_ID,   1.0)
+            self.send_motor_msg(self.motor_right_ID, -1.0) 
+        elif msg.data.lower() == "forward":
+            self.send_motor_msg(self.motor_left_ID,   1.0)
+            self.send_motor_msg(self.motor_right_ID,  1.0)
+        elif msg.data.lower() == "backward":
+            self.send_motor_msg(self.motor_left_ID,  -1.0)
+            self.send_motor_msg(self.motor_right_ID, -1.0)  
+        elif msg.data.lower() == "stop":
+            self.set_actuator_idle()
+        else:
+            rospy.logerror(rospy.get_caller_id() + ' invalid cmd_str=%s', msg.data)
+    
+       #rospy.loginfo("[ACK] Received command: Linear = %2.1f , Angular = %2.1f"%(message.linear.x, message.angular.z))
+        
     # sets motor speed between [-1.0, 1.0]
-    def set_speed(motor_ID, value):
+    def send_motor_msg(self, motor_ID, value):
         max_pwm = 115.0
         speed = int(min(max(abs(value * max_pwm), 0), max_pwm))
 
         if motor_ID == 1:
-            motor = motor_left
+            motor = self.motor_left
         elif motor_ID == 2:
-            motor = motor_right
+            motor = self.motor_right
         else:
             rospy.logerror('set_speed(%d, %f) -> invalid motor_ID=%d', motor_ID, value, motor_ID)
             return
-        
+
         motor.setSpeed(speed)
 
         if value > 0:
             motor.run(Adafruit_MotorHAT.FORWARD)
         else:
             motor.run(Adafruit_MotorHAT.BACKWARD)
-
-
-    # stops all motors
-    def all_stop():
-        motor_left.setSpeed(0)
-        motor_right.setSpeed(0)
-
-        motor_left.run(Adafruit_MotorHAT.RELEASE)
-        motor_right.run(Adafruit_MotorHAT.RELEASE)
-
-    # simple string commands (left/right/forward/backward/stop)
-    def on_cmd_str(msg):
-        rospy.loginfo(rospy.get_caller_id() + ' cmd_str=%s', msg.data)
-
-        if msg.data.lower() == "left":
-            set_speed(motor_left_ID,  -1.0)
-            set_speed(motor_right_ID,  1.0) 
-        elif msg.data.lower() == "right":
-            set_speed(motor_left_ID,   1.0)
-            set_speed(motor_right_ID, -1.0) 
-        elif msg.data.lower() == "forward":
-            set_speed(motor_left_ID,   1.0)
-            set_speed(motor_right_ID,  1.0)
-        elif msg.data.lower() == "backward":
-            set_speed(motor_left_ID,  -1.0)
-            set_speed(motor_right_ID, -1.0)  
-        elif msg.data.lower() == "stop":
-            all_stop()
-        else:
-            rospy.logerror(rospy.get_caller_id() + ' invalid cmd_str=%s', msg.data)
             
+        #rospy.loginfo("[ACK] Sending a command: Throttle = %d , Steering = %d"%(self._servo_msg.servos[0].value, self._servo_msg.servos[1].value))
+
+        #self.ros_pub_servo_array.publish(self._servo_msg)
+                                            
+                                                               
+    def set_actuators_idle(self):
+        self.motor_left.setSpeed(0)
+        self.motor_right.setSpeed(0)
+
+        self.motor_left.run(Adafruit_MotorHAT.RELEASE)
+        self.motor_right.run(Adafruit_MotorHAT.RELEASE)     
+
     @property
     def is_controller_connected(self):
         #print time.time() - self._last_time_cmd_rcv
@@ -108,10 +137,10 @@ class DiffDrive():
         while not rospy.is_shutdown():
             #print self._last_time_cmd_rcv, self.is_controller_connected
             if not self.is_controller_connected:
-                self.all_stop()
+                self.set_actuators_idle()
 
             rate.sleep()
-            
+
 if __name__ == "__main__":
-    diff = DiffDrive()
-    diff.run()
+    jetbot2 = DriveDifferential()
+    jetbot2.run()
